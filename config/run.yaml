@@ -1,0 +1,53 @@
+dataset:
+  root: data/celeba
+  num_images: 5000
+  eval_images: 500
+  seed: 42
+  resolution: 64
+  transform_version: 1
+
+models:
+  latent_dim: 128
+  base_channels: 64
+
+training:
+  max_gen_steps: 10000
+  ablation_steps: 3000
+  batch_size: 64
+  dcgan:
+    lr: 0.0002
+    betas: [0.5, 0.999]
+  wgan_clip:
+    lr: 0.00005
+    n_critic: 5
+    clip_value: 0.01
+  wgan_gp:
+    lr: 0.0001
+    betas: [0.0, 0.9]
+    n_critic: 5
+    lambda_gp: 10.0
+
+evaluation:
+  fid_interval: 2500
+  fid_batch_size: 128
+  sample_interval: 2500
+  gradient_log_interval_critic_updates: 100
+
+performance:
+  profile: rtx4050_fast
+  amp: true
+  tf32: true
+  num_workers: 4
+  worker_candidates: [0, 2, 4]
+  pin_memory: true
+  prefetch_factor: 4
+  cache_enabled: true
+
+experiments:
+  main_models: [dcgan, wgan_clip, wgan_gp]
+  lambda_values: [1.0, 10.0, 50.0]
+
+output:
+  runs_root: artifacts/runs
+  figures_root: artifacts/figures
+  tables_root: artifacts/tables
