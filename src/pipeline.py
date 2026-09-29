@@ -22,29 +22,56 @@ def preflight(config: RunConfig) -> dict:
 
 
 def prepare_data(config: RunConfig) -> dict:
+    """Build manifest, benchmark workers, and return DataLoaders - without the
+    extra build_dataloaders call the original had after the benchmark."""
     start = perf_counter()
     manifest = build_manifest(config)
     candidates = config.get("performance.worker_candidates")
-    selected = benchmark_dataloader(lambda workers: build_dataloaders(config, workers)[0], candidates)
-    train_loader, eval_loader, manifest = build_dataloaders(config, selected)
+
+    # Cache the last-built loader pair inside a dict so we can reuse the winner
+    # instead of calling build_dataloaders a second time.
+    _cache: dict = {}
+
+    def loader_factory(workers: int):
+        train_loader, eval_loader, _ = build_dataloaders(config, workers)
+        _cache["train"] = train_loader
+        _cache["eval"] = eval_loader
+        _cache["workers"] = workers
+        return train_loader
+
+    selected = benchmark_dataloader(loader_factory, candidates)
+
+    if _cache.get("workers") == selected:
+        train_loader = _cache["train"]
+        eval_loader = _cache["eval"]
+    else:
+        train_loader, eval_loader, manifest = build_dataloaders(config, selected)
+
     return {"train_loader": train_loader, "eval_loader": eval_loader, "manifest": manifest, "workers": selected,
             "prepare_seconds": perf_counter() - start}
 
 
 def run_smoke_tests(config: RunConfig, prepared: dict, steps: int = 2) -> list[dict]:
+    # compile_models=False: skip the torch.compile warm-up for quick sanity checks.
     device = configure_cuda(config.get("performance.tf32")); results = []
     for model in config.get("experiments.main_models"):
         directory = config.run_root() / "smoke" / model / f"seed_{config.seed}"
-        results.append(GANTrainer(config, model, directory, device).train(prepared["train_loader"], None, steps))
+        results.append(
+            GANTrainer(config, model, directory, device, compile_models=False)
+            .train(prepared["train_loader"], None, steps, resume=False)
+        )
     return results
 
 
-def run_main_comparison(config: RunConfig, prepared: dict) -> list[dict]:
+def run_main_comparison(config: RunConfig, prepared: dict, resume: bool = True) -> list[dict]:
+    """Train all main models.  Pass resume=True (default) to auto-resume from
+    a crashed run; pass resume=False to force a fresh start."""
     device = configure_cuda(config.get("performance.tf32")); results = []
     timings: dict[str, float] = {"data_prepare_seconds": prepared["prepare_seconds"]}
     for model in config.get("experiments.main_models"):
         directory = config.run_root() / "main" / model / f"seed_{config.seed}"
-        result = GANTrainer(config, model, directory, device).train(prepared["train_loader"], prepared["eval_loader"])
+        result = GANTrainer(config, model, directory, device).train(
+            prepared["train_loader"], prepared["eval_loader"], resume=resume)
         results.append(result); timings[f"{model}_training_seconds"] = float(result["training_seconds"])
     timing_path = config.run_root() / "pipeline_timings.json"; timing_path.parent.mkdir(parents=True, exist_ok=True)
     timing_path.write_text(json.dumps(timings, indent=2), encoding="utf-8")
@@ -56,14 +83,20 @@ def _with_lambda(config: RunConfig, value: float) -> RunConfig:
     return RunConfig(data, config.root)
 
 
-def run_lambda_ablation(config: RunConfig, prepared: dict) -> list[dict]:
+def run_lambda_ablation(config: RunConfig, prepared: dict, resume: bool = True) -> list[dict]:
+    """Run the WGAN-GP lambda ablation.  Pass resume=True (default) to
+    auto-resume from a crashed run; pass resume=False to force a fresh start."""
     device = configure_cuda(config.get("performance.tf32")); results = []
     for value in config.get("experiments.lambda_values"):
         if float(value) == float(config.get("training.wgan_gp.lambda_gp")):
             continue
         active = _with_lambda(config, value)
         directory = config.run_root() / "lambda_ablation" / f"lambda_{value:g}" / f"seed_{config.seed}"
-        results.append(GANTrainer(active, "wgan_gp", directory, device).train(prepared["train_loader"], prepared["eval_loader"], active.get("training.ablation_steps")))
+        results.append(
+            GANTrainer(active, "wgan_gp", directory, device)
+            .train(prepared["train_loader"], prepared["eval_loader"],
+                   active.get("training.ablation_steps"), resume=resume)
+        )
     return results
 
 

@@ -8,7 +8,7 @@ The project follows Gulrajani et al., *Improved Training of Wasserstein GANs* (2
 
 ## Quick start
 
-1. Place the CelebA image directory below `data/celeba/`.
+1. Place the CelebA aligned image files under `data/img_align_celeba/img_align_celeba/` (the standard extracted CelebA layout).
 2. Install dependencies: `python -m pip install -r requirements.txt`.
 3. Edit `dataset.num_images` in `config/run.yaml` to `5000` or `10000`.
 4. Open and run all cells in `main.ipynb`.

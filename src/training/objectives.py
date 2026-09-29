@@ -19,7 +19,7 @@ def gradient_penalty(critic, real: torch.Tensor, fake: torch.Tensor, lambda_gp: 
     epsilon = torch.rand(real.size(0), 1, 1, 1, device=real.device, dtype=real.dtype)
     interpolated = (epsilon * real + (1 - epsilon) * fake.detach()).requires_grad_(True)
     scores = critic(interpolated)
-    gradients = torch.autograd.grad(scores, interpolated, grad_outputs=torch.ones_like(scores), create_graph=True, only_inputs=True)[0]
+    gradients = torch.autograd.grad(scores, interpolated, grad_outputs=torch.ones_like(scores), create_graph=True, inputs=interpolated)[0]
     norms = gradients.flatten(1).norm(2, dim=1)
     return lambda_gp * ((norms - 1) ** 2).mean(), norms.detach()
 

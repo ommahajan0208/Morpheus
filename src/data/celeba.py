@@ -57,8 +57,10 @@ class CachedCelebADataset(Dataset[torch.Tensor]):
         return len(self.indices)
 
     def __getitem__(self, index: int) -> torch.Tensor:
-        image = np.array(self.images[self.indices[index]], copy=True)
-        return torch.from_numpy(image).permute(2, 0, 1).float().div_(127.5).sub_(1.0)
+        # Slice into a contiguous uint8 ndarray, then convert to float in one op.
+        # Avoids a second np.array allocation (copy=True) that the original used.
+        image = np.ascontiguousarray(self.images[self.indices[index]])
+        return torch.from_numpy(image).permute(2, 0, 1).to(dtype=torch.float32).div_(127.5).sub_(1.0)
 
 
 def build_dataloaders(config: RunConfig, workers: int | None = None) -> tuple[DataLoader, DataLoader, pd.DataFrame]:
@@ -67,10 +69,23 @@ def build_dataloaders(config: RunConfig, workers: int | None = None) -> tuple[Da
     worker_count = config.get("performance.num_workers") if workers is None else workers
     train_indices = np.flatnonzero(manifest["partition"].to_numpy() == "train")
     eval_indices = np.flatnonzero(manifest["partition"].to_numpy() == "eval")
-    options = {"batch_size": config.get("training.batch_size"), "num_workers": worker_count,
-               "pin_memory": config.get("performance.pin_memory"), "persistent_workers": worker_count > 0}
+    options: dict = {
+        "batch_size": config.get("training.batch_size"),
+        "num_workers": worker_count,
+        "pin_memory": config.get("performance.pin_memory"),
+        "persistent_workers": worker_count > 0,
+    }
     if worker_count > 0:
         options["prefetch_factor"] = config.get("performance.prefetch_factor")
-    train = DataLoader(CachedCelebADataset(cache_path, train_indices, len(manifest), config.resolution), shuffle=True, drop_last=True, **options)
-    evaluate = DataLoader(CachedCelebADataset(cache_path, eval_indices, len(manifest), config.resolution), shuffle=False, drop_last=False, **options)
+        # 'spawn' avoids inherited CUDA contexts that cause deadlocks with
+        # persistent_workers on Windows (the default 'fork' is not available).
+        options["multiprocessing_context"] = "spawn"
+    train = DataLoader(
+        CachedCelebADataset(cache_path, train_indices, len(manifest), config.resolution),
+        shuffle=True, drop_last=True, **options,
+    )
+    evaluate = DataLoader(
+        CachedCelebADataset(cache_path, eval_indices, len(manifest), config.resolution),
+        shuffle=False, drop_last=False, **options,
+    )
     return train, evaluate, manifest

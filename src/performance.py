@@ -15,8 +15,30 @@ def configure_cuda(tf32: bool = True) -> torch.device:
     return device
 
 
-def benchmark_dataloader(loader_factory, candidates: list[int], batches: int = 100) -> int:
-    """Return the worker count with the lowest measured host loading time."""
+def maybe_compile(module: torch.nn.Module, enabled: bool = True) -> torch.nn.Module:
+    """Wrap a module with torch.compile when CUDA is available and enabled.
+
+    torch.compile fuses CUDA kernel graphs after a one-time warm-up (~20-30 s
+    on the first batch) and then runs noticeably faster for every subsequent
+    forward/backward pass.  We guard behind a flag so smoke tests can skip
+    the warm-up cost.
+    """
+    if enabled and torch.cuda.is_available():
+        try:
+            return torch.compile(module, mode="reduce-overhead")
+        except Exception:
+            # torch.compile can fail on some Windows / driver combinations;
+            # fall back to eager silently so training still works.
+            pass
+    return module
+
+
+def benchmark_dataloader(loader_factory, candidates: list[int], batches: int = 30) -> int:
+    """Return the worker count with the lowest measured host loading time.
+
+    Reduced from 100 to 30 batches: 30 is enough to amortise the DataLoader
+    start-up cost while avoiding the 3x overhead of the original value.
+    """
     scores: dict[int, float] = {}
     for workers in candidates:
         loader = loader_factory(workers)
